@@ -1,0 +1,15 @@
+Q F
+a b
+A B V Z
+Q
+Z
+F
+F
+Q a e Q A
+Q b e Q B
+Q e e Q V
+Q a e Q V
+Q b e Q V
+Q e AVA Q V
+Q e BVB Q V
+Q e VZ F e
