@@ -1,6 +1,7 @@
 // Author: Krišjānis Veinbahs
 // Student ID: kv18042
 // Description: Magazine automata interpreter
+// Source: https://github.com/kshaa/pushdown-automaton-interpreter
 
 import { readFile } from 'fs'
 import readline from 'readline'
