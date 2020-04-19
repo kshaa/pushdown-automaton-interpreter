@@ -7,13 +7,12 @@ import readline from 'readline'
 import { inspect } from 'util'
 
 // Check if running in debug mode
-const isDebug = process.env['DEBUG']
+const isDebugMode = process.env['DEBUG']
 
 // Maximum amount of automata ticks allowed
 const environmentMaxTicksSerialized = process.env['MAX_TICKS']
 let environmentMaxTicks = 2000
 if (environmentMaxTicksSerialized && environmentMaxTicksSerialized.length > 0) {
-    console.log(environmentMaxTicksSerialized)
     environmentMaxTicks = Number(environmentMaxTicksSerialized)
 }
 
@@ -22,7 +21,7 @@ export type AlphabetSymbol = string
 export type StackSymbol = string
 export interface Transition {
     fromState: State
-    inputSymbol: AlphabetSymbol
+    inputSymbol: AlphabetSymbol | null
     inputStackSymbols: StackSymbol[]
     toState: State
     outputStackSymbols: StackSymbol[]
@@ -41,12 +40,89 @@ export interface InterpreterDefinition {
     transitions: Transition[]
 }
 
-// An interpreter configuration describes a specific state in which
-// the automata is in
+// An interpreter configuration describes a specific
+// state in which the automata is in
 export interface InterpreterConfiguration {
     stack: StackSymbol[]
     word: AlphabetSymbol[]
     state: State
+    history: InterpreterConfiguration[]
+}
+
+// Check if stack has a word at its top
+export const hasStackWord = (
+    stack: StackSymbol[],
+    word: StackSymbol[]
+): boolean => {
+    // Stack must have enough symbols
+    if (stack.length < word.length) {
+        return false
+    }
+
+    // Check if the top of stack has the word and all letter match
+    for (let i = 0; i < word.length; i++) {
+        // If any letter doesn't match then the stack doesn't have the word
+        if (stack[stack.length - i - 1] !== word[word.length - i - 1]) {
+            return false
+        }
+    }
+
+    // If all letters matched then word is present
+    return true
+}
+
+// Remove symbols from stack top
+export const stackPop = (
+    stack: StackSymbol[],
+    count: number
+): StackSymbol[] => {
+    return stack.slice(0, stack.length - count)
+}
+
+// Add symbols to stack top
+export const stackPush = (
+    stack: StackSymbol[],
+    word: StackSymbol[]
+): StackSymbol[] => {
+    return stack.concat(word)
+}
+
+// Validate if transition can be performed on state
+export const validTransition = (
+    config: InterpreterConfiguration,
+    transition: Transition
+): boolean => {
+    const stateMatches = transition.fromState === config.state
+    const stackMatches = hasStackWord(
+        config.stack,
+        transition.inputStackSymbols
+    )
+    const inputSymbolMatches =
+        transition.inputSymbol === null ||
+        (config.word.length >= 1 && transition.inputSymbol === config.word[0])
+
+    return stateMatches && stackMatches && inputSymbolMatches
+}
+
+// Blindly without any checks, perform configuration transition
+export const performTransition = (
+    config: InterpreterConfiguration,
+    transition: Transition
+): InterpreterConfiguration => {
+    const state = transition.toState
+    const word =
+        transition.inputSymbol === null ? config.word : config.word.slice(1)
+    const stack = stackPush(
+        stackPop(config.stack, transition.inputStackSymbols.length),
+        transition.outputStackSymbols
+    )
+    const history = config.history.concat([config])
+    return {
+        state,
+        word,
+        stack,
+        history,
+    }
 }
 
 // Error specifically for when interpreter reaches tick limit
@@ -103,12 +179,39 @@ export class ConfigurationSet extends Set<InterpreterConfiguration> {
     }
 }
 
+// Helper function for calculating set union
+// Src: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set
+export const union = <T extends unknown>(
+    setA: Set<T>,
+    setB: Set<T>
+): Set<T> => {
+    const _union = new Set(setA)
+    for (const elem of setB) {
+        _union.add(elem)
+    }
+    return _union
+}
+
+// Helper function for calculating set difference
+// Src: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set
+export const difference = <T extends unknown>(
+    setA: Set<T>,
+    setB: Set<T>
+): Set<T> => {
+    const _difference = new Set(setA)
+    for (const elem of setB) {
+        _difference.delete(elem)
+    }
+    return _difference
+}
+
 // An interpreter reads words and either accepts or rejects them
 export class Interpreter {
     definition: InterpreterDefinition
     configs!: ConfigurationSet
     ticks!: number
     maxTicks!: number
+    debugMode!: boolean
 
     // On interpreter creation, store definition
     // and create initial configuration
@@ -123,10 +226,16 @@ export class Interpreter {
         this.ticks = 0
         this.configs = new ConfigurationSet()
         this.configs.add({
-            word,
             state: this.definition.initialState,
+            word,
             stack: [this.definition.initialStackSymbol],
+            history: [],
         })
+    }
+
+    // Set debug mode for interpreter
+    setDebugMode(debugMode: boolean) {
+        this.debugMode = debugMode
     }
 
     // Set maximum amount of ticks allowed for interpreter
@@ -136,6 +245,23 @@ export class Interpreter {
 
     // Interpreter compute iteration
     tick() {
+        // Create storage for configs created throughout this tick
+        const newTickConfigs = new ConfigurationSet()
+
+        // For every current config, transition to new configs
+        for (const config of this.configs) {
+            const validTransitions = this.definition.transitions.filter(
+                transition => validTransition(config, transition)
+            )
+            for (const transition of validTransitions) {
+                const newConfig = performTransition(config, transition)
+                newTickConfigs.add(newConfig)
+            }
+        }
+
+        this.configs = newTickConfigs
+
+        // Bump tick counter
         this.ticks++
     }
 
@@ -156,14 +282,19 @@ export class Interpreter {
         }
     }
 
-    // Whether the interpreter accepts any of its current configurations
-    acceptsCurrentConfigurations() {
+    // Find the first currently accepted configurations, if it exists
+    getFirstAcceptedCurrentConfiguration() {
         for (const config of this.configs) {
             if (this.acceptsCurrentConfiguration(config)) {
-                return true
+                return config
             }
         }
-        return false
+        return null
+    }
+
+    // Alias for `getFirstAcceptedCurrentConfiguration`
+    acceptsCurrentConfigurations() {
+        return this.getFirstAcceptedCurrentConfiguration() !== null
     }
 
     // Whether the interpreter would accept some given word
@@ -181,7 +312,7 @@ export class Interpreter {
             }
 
             // Print configurations for each tick in debug mode
-            if (isDebug) {
+            if (this.debugMode) {
                 console.log(`Tick no. ${this.ticks}, current configs:`)
                 console.log(this.configs)
             }
@@ -192,6 +323,26 @@ export class Interpreter {
 
         // If the loop above broke, it's because the word was accepted
         return true
+    }
+
+    printAcceptionTransitions() {
+        const printConfig = (config: InterpreterConfiguration) => {
+            console.log(
+                `{ state: ${config.state}, ` +
+                    `word: [ ${config.word.join(', ')} ], ` +
+                    `stack: [ ${config.stack.join(', ')} ] }`
+            )
+        }
+        const acceptedConfig = this.getFirstAcceptedCurrentConfiguration()
+        if (acceptedConfig) {
+            console.log(`Accepted using the following transitions:`)
+            for (const historyConfig of acceptedConfig.history) {
+                printConfig(historyConfig)
+            }
+            printConfig(acceptedConfig)
+        } else {
+            console.log("Word couldn't be accepted through any transitions")
+        }
     }
 }
 
@@ -228,6 +379,8 @@ export const readAutomataFromParameter = (
 }
 
 // Parse automata string and return an initialised Interpreter
+export const EMPTY_ALPHABET_SYMBOL: AlphabetSymbol = 'e'
+export const EMPTY_STACK_SYMBOL: StackSymbol = 'e'
 export const parseAutomata = (
     automataFile: Buffer | string,
     callback: (interpreter: Interpreter) => unknown
@@ -235,7 +388,16 @@ export const parseAutomata = (
     // Transform automata data to string format
     const automataText = automataFile.toString()
 
-    // Parse automata definition text
+    // Parse lines and words in automata definition text
+    const automataLines = automataText.trim().split('\n')
+    const automataWordLines = automataLines.map(line =>
+        line
+            .trim()
+            .split(' ')
+            .map(word => word.trim())
+    )
+
+    // Split lines and words in definition into appropriate parts
     const [
         states,
         alphabetSymbols,
@@ -245,33 +407,43 @@ export const parseAutomata = (
         acceptedStates,
         acceptThroughEmptyStackSymbols,
         ...transitionLines
-    ] = automataText
-        .trim()
-        .split('\n')
-        .map(line =>
-            line
-                .trim()
-                .split(' ')
-                .map(word => word.trim())
-        )
+    ] = automataWordLines
 
     // Extra parsing on transitions
     const transitions: Transition[] = transitionLines.map(transition => {
         const [
             fromState,
-            inputSymbol,
+            inputSymbolSerialized,
             inputStackSymbolsSerialized,
             toState,
             outputStackSymbolsSerialized,
             ...other
         ] = transition
-        const inputStackSymbols = inputStackSymbolsSerialized.split('')
-        const outputStackSymbols = outputStackSymbolsSerialized.split('')
+
+        // Stacks are reversed, because professor uses a more human-readable
+        // notation, which is impractical for computers
+        let inputStackSymbols: StackSymbol[] = []
+        if (inputStackSymbolsSerialized !== EMPTY_STACK_SYMBOL) {
+            inputStackSymbols = inputStackSymbolsSerialized.split('').reverse()
+        }
+
+        let outputStackSymbols: StackSymbol[] = []
+        if (outputStackSymbolsSerialized !== EMPTY_STACK_SYMBOL) {
+            outputStackSymbols = outputStackSymbolsSerialized
+                .split('')
+                .reverse()
+        }
         if (other.length > 0) {
             throw new Error(
                 `Transition line contains more data than needed: ${transition}`
             )
         }
+
+        const inputSymbol =
+            inputSymbolSerialized === EMPTY_ALPHABET_SYMBOL
+                ? null
+                : inputSymbolSerialized
+
         return {
             fromState,
             inputSymbol,
@@ -328,13 +500,16 @@ export const parseAutomata = (
 // Automata read-eval-print loop
 export const replAutomata = (automata: Interpreter) => {
     // Inform user in debug mode about read automata
-    if (isDebug) {
+    if (isDebugMode) {
         console.log('Defined automata:')
         console.log(inspect(automata.definition, false, null, true))
     }
 
     // Set max tick limit in debug mode
     automata.setMaxTicks(environmentMaxTicks)
+
+    // Set debug mode, when relevant
+    automata.setDebugMode(!!isDebugMode)
 
     // Initialize console interface
     const rl = readline.createInterface({
@@ -346,13 +521,18 @@ export const replAutomata = (automata: Interpreter) => {
     console.log('To stop the interactive console, use Ctrl-C')
     const inquire = () => {
         rl.question('Insert word for interpreter: ', word => {
-            console.log(`Read word: ${word}`)
+            console.log(`Read word: '${word}'`)
             const alphabetizedWord: AlphabetSymbol[] = word.split('')
             try {
                 if (automata.acceptsWord(alphabetizedWord)) {
-                    console.log(`Accepted word ${word}`)
+                    console.log(
+                        `Accepted word '${word}' in ${automata.ticks} ticks`
+                    )
+                    automata.printAcceptionTransitions()
                 } else {
-                    console.log(`Rejected word ${word}`)
+                    console.log(
+                        `Rejected word '${word}' in ${automata.ticks} ticks`
+                    )
                 }
             } catch (e) {
                 if (e instanceof TickLimitError) {
@@ -366,7 +546,7 @@ export const replAutomata = (automata: Interpreter) => {
             inquire()
         })
     }
-    
+
     // Start inquiry process
     inquire()
 }
@@ -376,13 +556,12 @@ export const replAutomata = (automata: Interpreter) => {
 if (!module.parent) {
     // Find and read automata definition file
     readAutomataFromParameter(automatadata => {
-        if (isDebug) console.log(`Read automata {\n${automatadata}\n}`)
-        
+        if (isDebugMode) console.log(`Read automata {\n${automatadata}\n}`)
+
         // Initialize automata from definition
         parseAutomata(automatadata, automata => {
             // Start automata REPL
             replAutomata(automata)
         })
     })
-
 }

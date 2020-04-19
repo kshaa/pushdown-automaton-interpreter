@@ -1,4 +1,8 @@
-import { readAutomata, parseAutomata, Interpreter } from '../../code/interpreter'
+import {
+    readAutomata,
+    parseAutomata,
+    Interpreter,
+} from '../../code/interpreter'
 import { describe } from 'mocha'
 import { assert } from 'chai'
 import { join } from 'path'
@@ -13,16 +17,14 @@ describe('[Integration] Example automata #1', () => {
         })
     }
     it(`Should accept known correct words`, done => {
-        const maxTicksRequired = 1
-        const acceptedWords = [
-            '', 'aa', 'aaaa', 'bb', 'bbbb', 'aabb', 'aabbbb'
-        ]
+        const maxTicksRequired = 5
+        const acceptedWords = ['', 'a', 'aa', 'aaa', 'b', 'bb', 'bbb']
 
         testAutomataOne(automata => {
             automata.setMaxTicks(maxTicksRequired)
             for (const word of acceptedWords) {
                 const alphabetizedWord = word.split('')
-                
+
                 assert.doesNotThrow(() => {
                     automata.acceptsWord(alphabetizedWord)
                 })
