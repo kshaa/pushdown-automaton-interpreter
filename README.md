@@ -1,1 +1,1 @@
-# Magazine Automata interpreter
+# Magazine automata interpreter
